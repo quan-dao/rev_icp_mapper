@@ -1,0 +1,20 @@
+<launch>
+
+<param name="/use_sim_time" value="true"/>
+
+<!--node pkg="rviz" type="rviz" name="rviz" args="-d kitti_check_icp.rviz" /-->
+
+<node pkg="rosbag" type="play" name="player" args="-r 0.25 --clock /home/mqdao/Downloads/KITTI/kitti_2011_09_26_drive_0005_synced.bag" />
+
+<node pkg="tf" type="static_transform_publisher" name="map_pose_broadcaster" args="0.189606 -1.43913 0.812132 0.00763836
+ 0.00388051 -0.562597 0.826687 world map 100" />
+
+<node pkg="rev_icp_mapper" type="icp_odom_node" name="icp_odom_node" output="screen">
+  <remap from="cloud_in" to="/kitti/velo/pointcloud" />
+  <param name="icpConfig" value="$(find rev_icp_mapper)/launch/icp_odom_icp_config.yaml" />
+  <param name="inputFiltersConfig" value="$(find rev_icp_mapper)/launch/icp_odom_inputFilters_config.yaml" />
+  <param name="mapPreFiltersConfig" value="$(find rev_icp_mapper)/launch/icp_odom_mapPreFilters_config.yaml" />
+  <param name="mapPostFiltersConfig" value="$(find rev_icp_mapper)/launch/icp_odom_mapPostFilters_config.yaml" />
+</node>
+
+</launch>

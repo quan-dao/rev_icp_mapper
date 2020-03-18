@@ -1,0 +1,17 @@
+<launch>
+
+<param name="/use_sim_time" value="true"/>
+
+<node pkg="rviz" type="rviz" name="rviz" args="-d kitti_check.rviz" />
+
+<node pkg="rosbag" type="play" name="player" args="--clock /home/mqdao/Downloads/KITTI/kitti_2011_09_26_drive_0005_synced.bag" output="screen" />
+
+<node pkg="rev_icp_mapper" type="get_pose_node" name="get_pose_node" output="screen">
+  <param name="startup_drop" value="1" />
+</node>
+
+<node pkg="tf" type="static_transform_publisher" name="map_broadcaster" args="0.189606 -1.43913 0.812132 0.00763836
+ 0.00388051 -0.562597 0.826687 world map 100" />
+
+
+</launch>
