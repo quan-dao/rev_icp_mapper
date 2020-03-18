@@ -3,6 +3,8 @@
 #include "rev_icp_mapper/MatchCloudsREV.h"
 #include <tf/transform_listener.h>
 #include <tf/tf.h>
+#include <nav_msgs/Path.h>
+#include <geometry_msgs/PoseStamped.h>
 
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
@@ -12,6 +14,7 @@
 
 #include <string>
 #include <iostream>
+#include <vector>
 
 using namespace sensor_msgs;
 using namespace std;
@@ -27,6 +30,7 @@ public:
 protected:
   void cloudCallBack(const PointCloud2::ConstPtr& cloud_msg);
   void publishAll(ros::Time stamp);
+  void tfTransformToGeometryPose(const tf::StampedTransform& tf_trans, geometry_msgs::PoseStamped& pose);
 
   ros::NodeHandle nh, nh_private;
 
@@ -35,15 +39,19 @@ protected:
   ros::ServiceClient cloud_matcher_client;
   tf::TransformListener tf_listener;
 
+  // for path visualization
+  ros::Publisher path_pub;
+  vector<geometry_msgs::PoseStamped> path_poses;
+
   PCLPointCloud map_cloud, reading_cloud, corrected_cloud;
   Eigen::Matrix4f worldToMap;
 
-  tf::Transform sensorToMapTf;  // map frame is world frame !!!
+  tf::StampedTransform sensorToMapTf;  // map frame is world frame !!!
 
   int startup_drop, reading_cloud_counter, max_cloud;
   float maxOverlapToMerge;
 
-  string world_frameId;
+  string world_frameId, sensor_frameId;
 };
 
 
@@ -54,11 +62,15 @@ IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   reading_cloud_counter(0),
   maxOverlapToMerge(0.9),
   max_cloud(15),
-  world_frameId("world")
+  world_frameId("world"),
+  sensor_frameId("velo_link")
 {
   // setup topic
   cloud_sub = nh.subscribe("cloud_in", 1, &IcpOdom::cloudCallBack, this);
+  
   merged_cloud_pub = nh.advertise<PointCloud2>("merged_cloud", 1);
+  path_pub = nh.advertise<nav_msgs::Path>("sensor_path", 1);
+
   ros::service::waitForService("rev_match_clouds");
   cloud_matcher_client = nh.serviceClient<rev_icp_mapper::MatchCloudsREV>("rev_match_clouds");
 
@@ -66,7 +78,27 @@ IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   nh_private.param("startup_drop", startup_drop, startup_drop);
   nh_private.param("maxOverlapToMerge", maxOverlapToMerge, maxOverlapToMerge);
   nh_private.param("world_frameId", world_frameId, world_frameId);
+  nh_private.param("sensor_frameId", sensor_frameId, sensor_frameId);
   nh_private.param("max_cloud", max_cloud, max_cloud);
+}
+
+
+void IcpOdom::tfTransformToGeometryPose(const tf::StampedTransform& tf_trans, geometry_msgs::PoseStamped& pose)
+{
+  // copy header
+  pose.header.frame_id = tf_trans.frame_id_;
+  pose.header.stamp = tf_trans.stamp_;
+
+  // copy translation
+  pose.pose.position.x = tf_trans.getOrigin().x();
+  pose.pose.position.y = tf_trans.getOrigin().y();
+  pose.pose.position.z = tf_trans.getOrigin().z();
+
+  // copy orientation
+  pose.pose.orientation.x = tf_trans.getRotation().x();
+  pose.pose.orientation.y = tf_trans.getRotation().y();
+  pose.pose.orientation.z = tf_trans.getRotation().z();
+  pose.pose.orientation.w = tf_trans.getRotation().w();
 }
 
 
@@ -103,6 +135,11 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
     ROS_INFO("Init sensorToMapTf with current sensorToWorldTf");
     sensorToMapTf = sensorToWorldTf;
     
+    ROS_INFO("Init path with current sensorToMapTf");
+    geometry_msgs::PoseStamped pose_;
+    tfTransformToGeometryPose(sensorToMapTf, pose_);
+    path_poses.push_back(pose_);
+
     reading_cloud_counter++;
     return;
   }
@@ -151,7 +188,18 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
       pcl::transformPointCloud(cloud_in, cloud_in, worldToMap);
 
       // correct sensorToWorldTf with worldToMapTf (ICP result) to get sensorToMapTf (corrected odometry)
-      sensorToMapTf = worldToMapTf * sensorToWorldTf;
+      tf::Transform sensorToMapTf_ = worldToMapTf * sensorToWorldTf;
+      sensorToMapTf.setOrigin(sensorToMapTf_.getOrigin());
+      sensorToMapTf.setRotation(sensorToMapTf_.getRotation());
+      // update sensorToMapTf 's fields
+      sensorToMapTf.frame_id_ = world_frameId;
+      sensorToMapTf.child_frame_id_ = cloud_msg->header.frame_id;  // frame_id of the sensor frame
+      sensorToMapTf.stamp_ = cloud_msg->header.stamp;
+
+      // concatenate new sensor poses (w.r.t map or world) to path
+      geometry_msgs::PoseStamped pose_;
+      tfTransformToGeometryPose(sensorToMapTf, pose_);
+      path_poses.push_back(pose_);
 
       // concatenate reading_cloud with map_cloud
       map_cloud += cloud_in;
@@ -178,10 +226,18 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
 
 
 void IcpOdom::publishAll(ros::Time stamp)
-{
+{ 
+  // publish merge cloud
   PointCloud2 map_cloud_msg;
   pcl::toROSMsg(map_cloud, map_cloud_msg);
   merged_cloud_pub.publish(map_cloud_msg);
+
+  // publish path
+  nav_msgs::Path path_;
+  path_.header.frame_id = world_frameId;
+  path_.header.stamp = stamp;
+  path_.poses = path_poses;
+  path_pub.publish(path_);
 }
 
 

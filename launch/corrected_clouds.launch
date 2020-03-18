@@ -6,7 +6,7 @@
   <param name="config" value="/home/mqdao/ros/src/rev_icp_mapper/launch/icp_dynamic_outdoor.yaml" />
 </node>
 
-<node pkg="rviz" type="rviz" name="rviz" args="-d kitti_check_icp.rviz" />
+<node pkg="rviz" type="rviz" name="rviz" args="-d kitti_icp_odom.rviz" />
 
 <node pkg="rosbag" type="play" name="player" args="-r 0.1 --clock /home/mqdao/Downloads/KITTI/kitti_2011_09_26_drive_0005_synced.bag" />
 

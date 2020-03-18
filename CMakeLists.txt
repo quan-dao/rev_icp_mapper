@@ -17,6 +17,7 @@ find_package(catkin REQUIRED COMPONENTS
   pcl_ros
   pcl_conversions
   tf
+  nav_msgs
 )
 
 ## System dependencies are found with CMake's conventions
@@ -107,7 +108,7 @@ generate_messages(
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES rev_icp_mapper
-  CATKIN_DEPENDS geometry_msgs sensor_msgs libpointmatcher_ros roscpp rospy pcl_ros  pcl_conversions tf
+  CATKIN_DEPENDS geometry_msgs sensor_msgs libpointmatcher_ros roscpp rospy pcl_ros  pcl_conversions tf nav_msgs
 #  DEPENDS system_lib
 )
 
