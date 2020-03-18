@@ -36,7 +36,9 @@ protected:
   tf::TransformListener tf_listener;
 
   PCLPointCloud map_cloud, reading_cloud, corrected_cloud;
-  Eigen::Matrix4f readingToMap;
+  Eigen::Matrix4f worldToMap;
+
+  tf::Transform sensorToMapTf;  // map frame is world frame !!!
 
   int startup_drop, reading_cloud_counter, max_cloud;
   float maxOverlapToMerge;
@@ -57,6 +59,7 @@ IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   // setup topic
   cloud_sub = nh.subscribe("cloud_in", 1, &IcpOdom::cloudCallBack, this);
   merged_cloud_pub = nh.advertise<PointCloud2>("merged_cloud", 1);
+  ros::service::waitForService("rev_match_clouds");
   cloud_matcher_client = nh.serviceClient<rev_icp_mapper::MatchCloudsREV>("rev_match_clouds");
 
   // get param
@@ -96,6 +99,10 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
   if (reading_cloud_counter == startup_drop) {
     ROS_INFO("Init map_cloud with current scan");
     map_cloud = cloud_in;
+
+    ROS_INFO("Init sensorToMapTf with current sensorToWorldTf");
+    sensorToMapTf = sensorToWorldTf;
+    
     reading_cloud_counter++;
     return;
   }
@@ -115,8 +122,8 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
   srv.request.readings = reading_cloud_msg;
 
   // init init_transform for ICP
-  tf::Transform init_transform;
-  init_transform.setIdentity();
+  tf::Transform init_transform = sensorToMapTf * sensorToWorldTf.inverse();
+  // init_transform.setIdentity();
   srv.request.init_transform.rotation.x = init_transform.getRotation().x();
   srv.request.init_transform.rotation.y = init_transform.getRotation().y();
   srv.request.init_transform.rotation.z = init_transform.getRotation().z();
@@ -129,19 +136,22 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
     ROS_INFO("Call match_clouds_services successfully");
     if (srv.response.overlap_ratio < maxOverlapToMerge) {
       // define transformation from reading cloud to map cloud
-      tf::Quaternion readingToMap_rot(srv.response.transform.rotation.x, 
+      tf::Quaternion worldToMap_rot(srv.response.transform.rotation.x, 
                                       srv.response.transform.rotation.y,
                                       srv.response.transform.rotation.z,
                                       srv.response.transform.rotation.w);
 
-      tf::Vector3 readingToMap_trans(srv.response.transform.translation.x,
+      tf::Vector3 worldToMap_trans(srv.response.transform.translation.x,
                                     srv.response.transform.translation.y,
                                     srv.response.transform.translation.z);
 
-      tf::Transform readingToMapTf(readingToMap_rot, readingToMap_trans);
-      pcl_ros::transformAsMatrix(readingToMapTf, readingToMap);
+      tf::Transform worldToMapTf(worldToMap_rot, worldToMap_trans);
+      pcl_ros::transformAsMatrix(worldToMapTf, worldToMap);
 
-      pcl::transformPointCloud(cloud_in, cloud_in, readingToMap);
+      pcl::transformPointCloud(cloud_in, cloud_in, worldToMap);
+
+      // correct sensorToWorldTf with worldToMapTf (ICP result) to get sensorToMapTf (corrected odometry)
+      sensorToMapTf = worldToMapTf * sensorToWorldTf;
 
       // concatenate reading_cloud with map_cloud
       map_cloud += cloud_in;
