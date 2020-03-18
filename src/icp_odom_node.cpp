@@ -230,6 +230,8 @@ void IcpOdom::publishAll(ros::Time stamp)
   // publish merge cloud
   PointCloud2 map_cloud_msg;
   pcl::toROSMsg(map_cloud, map_cloud_msg);
+  map_cloud_msg.header.frame_id = world_frameId;
+  map_cloud_msg.header.stamp = stamp;
   merged_cloud_pub.publish(map_cloud_msg);
 
   // publish path
