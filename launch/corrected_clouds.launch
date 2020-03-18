@@ -2,7 +2,7 @@
 
 <param name="/use_sim_time" value="true"/>
 
-<node pkg="ethzasl_icp_mapper" type="matcher_service" name="matcher_server" output="screen">
+<node pkg="rev_icp_mapper" type="rev_match_cloud_server" name="matcher_server" output="screen">
   <param name="config" value="/home/mqdao/ros/src/rev_icp_mapper/launch/icp_dynamic_outdoor.yaml" />
 </node>
 
@@ -19,7 +19,7 @@
 
 <node pkg="rev_icp_mapper" type="icp_odom_node" name="icp_odom_node" output="screen">
   <remap from="cloud_in" to="/kitti/velo/pointcloud" />
-  <param name="max_cloud" value="25" />
+  <param name="max_cloud" value="50" />
   <param name="maxOverlapToMerge" value="0.98" />
   <param name="startup_drop" value="1" />
 </node>

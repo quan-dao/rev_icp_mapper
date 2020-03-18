@@ -1,6 +1,6 @@
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
-#include "ethzasl_icp_mapper/MatchClouds.h"
+#include "rev_icp_mapper/MatchCloudsREV.h"
 
 #include <pcl/point_types.h>
 #include <pcl/conversions.h>
@@ -22,7 +22,7 @@ public:
     referenceCloud_pub = nh.advertise<PointCloud2>("reference_cloud", 1);
     correctedReadingCloud_pub = nh.advertise<PointCloud2>("corrected_reading_cloud", 1);
 
-    matcher_client = nh.serviceClient<ethzasl_icp_mapper::MatchClouds>("match_clouds");
+    matcher_client = nh.serviceClient<rev_icp_mapper::MatchCloudsREV>("match_clouds");
 
     nh_private.param("startup_dropout", startup_dropout, startup_dropout);
     nh_private.param("reading_gap", reading_gap, reading_gap);
@@ -59,13 +59,13 @@ public:
       cloud_counter++;
 
       /// compute corrected cloud
-      ethzasl_icp_mapper::MatchClouds srv;
+      rev_icp_mapper::MatchCloudsREV srv;
       srv.request.reference = reference_cloud;
       srv.request.readings = reading_cloud;
       if (matcher_client.call(srv)) {
         ROS_INFO("Call match_clouds_services successfully");
         ROS_INFO_STREAM("Resuted transformation\n\t"<<srv.response.transform);
-        ROS_INFO_STREAM("Overlap reatio: "<<srv.response.overlapRatio);
+        ROS_INFO_STREAM("Overlap reatio: "<<srv.response.overlap_ratio);
         
         // define transformation from reading to ref
         tf::Quaternion readingToRef_rot(srv.response.transform.rotation.x, 

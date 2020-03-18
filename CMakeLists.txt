@@ -14,7 +14,6 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
   message_generation
-  ethzasl_icp_mapper
   pcl_ros
   pcl_conversions
   tf
@@ -147,6 +146,10 @@ target_link_libraries(get_pose_node ${catkin_LIBRARIES})
 
 add_executable(icp_odom_node src/icp_odom_node.cpp)
 target_link_libraries(icp_odom_node ${catkin_LIBRARIES} ${libpointmatcher_LIBRARIES})
+
+add_executable(rev_match_cloud_server src/rev_match_cloud_server.cpp)
+add_dependencies(rev_match_cloud_server ${PROJECT_NAME}_gencpp)
+target_link_libraries(rev_match_cloud_server ${catkin_LIBRARIES} ${libpointmatcher_LIBRARIES})
 
 
 ## Rename C++ executable without prefix

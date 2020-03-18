@@ -1,4 +1,6 @@
 sensor_msgs/PointCloud2 reference
 sensor_msgs/PointCloud2 readings
+geometry_msgs/Transform init_transform
 ---
 geometry_msgs/Transform transform
+float32                 overlap_ratio

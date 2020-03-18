@@ -1,7 +1,8 @@
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
-#include "ethzasl_icp_mapper/MatchClouds.h"
+#include "rev_icp_mapper/MatchCloudsREV.h"
 #include <tf/transform_listener.h>
+#include <tf/tf.h>
 
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
@@ -56,7 +57,7 @@ IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   // setup topic
   cloud_sub = nh.subscribe("cloud_in", 1, &IcpOdom::cloudCallBack, this);
   merged_cloud_pub = nh.advertise<PointCloud2>("merged_cloud", 1);
-  cloud_matcher_client = nh.serviceClient<ethzasl_icp_mapper::MatchClouds>("match_clouds");
+  cloud_matcher_client = nh.serviceClient<rev_icp_mapper::MatchCloudsREV>("rev_match_clouds");
 
   // get param
   nh_private.param("startup_drop", startup_drop, startup_drop);
@@ -106,16 +107,27 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
 
 
   /// Register reading cloud to map cloud
-  ethzasl_icp_mapper::MatchClouds srv;
+  rev_icp_mapper::MatchCloudsREV srv;
   PointCloud2 map_cloud_msg, reading_cloud_msg;
   pcl::toROSMsg(map_cloud, map_cloud_msg);
   pcl::toROSMsg(cloud_in, reading_cloud_msg);
   srv.request.reference = map_cloud_msg;
   srv.request.readings = reading_cloud_msg;
 
+  // init init_transform for ICP
+  tf::Transform init_transform;
+  init_transform.setIdentity();
+  srv.request.init_transform.rotation.x = init_transform.getRotation().x();
+  srv.request.init_transform.rotation.y = init_transform.getRotation().y();
+  srv.request.init_transform.rotation.z = init_transform.getRotation().z();
+  srv.request.init_transform.rotation.w = init_transform.getRotation().w();
+  srv.request.init_transform.translation.x = init_transform.getOrigin().x();
+  srv.request.init_transform.translation.y = init_transform.getOrigin().y();
+  srv.request.init_transform.translation.z = init_transform.getOrigin().z();
+
   if (cloud_matcher_client.call(srv)) {
     ROS_INFO("Call match_clouds_services successfully");
-    if (srv.response.overlapRatio < maxOverlapToMerge) {
+    if (srv.response.overlap_ratio < maxOverlapToMerge) {
       // define transformation from reading cloud to map cloud
       tf::Quaternion readingToMap_rot(srv.response.transform.rotation.x, 
                                       srv.response.transform.rotation.y,
