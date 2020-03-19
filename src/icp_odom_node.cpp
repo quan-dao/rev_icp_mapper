@@ -8,6 +8,7 @@
 
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/passthrough.h>
 #include <pcl/conversions.h>
 #include <pcl_ros/transforms.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -215,6 +216,26 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
       cout<<"Downsampling map cloud\n\tNum pts before: "<<num_before<<"\n";
       cout<<"\tNum pts after: "<<map_cloud.width<<"\n";
       cout<<"\tReduced factor: "<<100.0-map_cloud.width*100.0/num_before<<"\n";
+
+      // drop map_cloud if number of point exist a threshold
+      if (map_cloud.width>300000) {
+        num_before = map_cloud.width;
+        // transform map_cloud to sensor frame
+        Eigen::Matrix4f mapToSensor;
+        pcl_ros::transformAsMatrix(sensorToMapTf.inverse(), mapToSensor);
+        pcl::transformPointCloud(map_cloud, map_cloud, mapToSensor);
+        // pass through filter
+        pcl::PassThrough<PCLPoint> pass_x;
+        pass_x.setFilterFieldName("x");
+        pass_x.setFilterLimits(-5, 100);
+        pass_x.setInputCloud(map_cloud.makeShared());
+        pass_x.filter(map_cloud);
+        cout<<"Dropping pointcloud has negative x in sensor frame\n";
+        cout<<"\tNum pts after: "<<map_cloud.width<<"\n";
+        cout<<"\tReduced factor: "<<100.0-map_cloud.width*100.0/num_before<<"\n";
+        // transform map_cloud back to world frame
+        pcl::transformPointCloud(map_cloud, map_cloud, mapToSensor.inverse());
+      }
     }
   }
   else {

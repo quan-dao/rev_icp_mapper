@@ -19,7 +19,7 @@
 
 <node pkg="rev_icp_mapper" type="icp_odom_node" name="icp_odom_node" output="screen">
   <remap from="cloud_in" to="/kitti/velo/pointcloud" />
-  <param name="max_cloud" value="50" />
+  <param name="max_cloud" value="154" />
   <param name="maxOverlapToMerge" value="0.98" />
   <param name="startup_drop" value="1" />
 </node>
