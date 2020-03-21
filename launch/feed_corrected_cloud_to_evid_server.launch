@@ -1,0 +1,54 @@
+<launch>
+
+<param name="/use_sim_time" value="true"/>
+
+<node pkg="rev_icp_mapper" type="rev_match_cloud_server" name="matcher_server" output="screen">
+  <param name="config" value="/home/mqdao/ros/src/rev_icp_mapper/launch/icp_dynamic_outdoor.yaml" />
+</node>
+
+<!-- Octomapping -->
+<node pkg="octomap_mot" type="octomap_evid_server" name="octomap_server" output="screen">
+
+  <!-- to prepare topic as needed -->
+  <param name="latch" value="false"/>
+  <param name="publish_conf_cells" value="true"/>
+  <param name="is_testing_octomap_server" value="false"/>
+  
+  <param name="world_frame_id" value="/world"/>
+  <param name="base_frame_id" value="/base_link"/>
+  <param name="sensor_frame_id" value="/velo_link"/>
+
+  <!--tree param-->
+  <param name="resolution" value="0.15"/>
+  <param name="evid_grid/lambda_free" value="0.4"/>
+  <param name="evid_grid/lambda_occupied" value="0.8"/>
+  <param name="evid_grid/conflict_thres" value="0.7"/>
+  <param name="evid_grid/tau" value="2.0"/>
+
+  <!-- maximum range to integrate (speedup!) -->
+  <param name="sensor_model/max_range" value="45.0"/>
+
+  <!-- filter ground -->
+  <param name="filter_ground" value="false"/>
+
+  <!--pointcloud pass through filter-->
+  <param name="pointcloud_min_x" value="-5"/>
+  <param name="pointcloud_min_y" value="-10"/>
+  <param name="pointcloud_max_y" value="5"/>
+  <param name="pointcloud_min_z" value="0.35" />
+  <param name="pointcloud_max_z" value="3.0" />
+
+</node>	
+
+<node pkg="rviz" type="rviz" name="rviz" args="-d $(find octomap_mot)/rviz/test_octomap_evid.rviz" />
+
+<node pkg="rosbag" type="play" name="player" args="-r 0.05 --clock /home/mqdao/Downloads/KITTI/kitti_2011_09_26_drive_0005_synced.bag" />
+
+<node pkg="rev_icp_mapper" type="icp_odom_node" name="icp_odom_node" output="screen">
+  <remap from="cloud_in" to="/kitti/velo/pointcloud" />
+  <param name="max_cloud" value="154" />
+  <param name="maxOverlapToMerge" value="0.98" />
+  <param name="startup_drop" value="1" />
+</node>
+
+</launch>

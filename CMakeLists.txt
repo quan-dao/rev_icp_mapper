@@ -18,6 +18,7 @@ find_package(catkin REQUIRED COMPONENTS
   pcl_conversions
   tf
   nav_msgs
+  octomap_mot
 )
 
 ## System dependencies are found with CMake's conventions

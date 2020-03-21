@@ -1,6 +1,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include "rev_icp_mapper/MatchCloudsREV.h"
+#include "octomap_mot/FindConflict.h"
 #include <tf/transform_listener.h>
 #include <tf/tf.h>
 #include <nav_msgs/Path.h>
@@ -37,7 +38,7 @@ protected:
 
   ros::Subscriber cloud_sub;
   ros::Publisher merged_cloud_pub;
-  ros::ServiceClient cloud_matcher_client;
+  ros::ServiceClient cloud_matcher_client, find_conflict_client;
   tf::TransformListener tf_listener;
 
   // for path visualization
@@ -74,6 +75,8 @@ IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
 
   ros::service::waitForService("rev_match_clouds");
   cloud_matcher_client = nh.serviceClient<rev_icp_mapper::MatchCloudsREV>("rev_match_clouds");
+  ros::service::waitForService("find_conflict_srv");
+  find_conflict_client = nh.serviceClient<octomap_mot::FindConflict>("find_conflict_srv");
 
   // get param
   nh_private.param("startup_drop", startup_drop, startup_drop);
@@ -201,6 +204,29 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
       geometry_msgs::PoseStamped pose_;
       tfTransformToGeometryPose(sensorToMapTf, pose_);
       path_poses.push_back(pose_);
+
+      //------------------------------------------------------------------------------
+      // invoke find_conflict_server
+      octomap_mot::FindConflict conf_srv;
+      pcl::toROSMsg(cloud_in, conf_srv.request.incoming_cloud);
+      // convert sensorToMapTf to geometry/TransformStamped
+      conf_srv.request.sensorToMap.header.stamp = sensorToMapTf.stamp_;
+      conf_srv.request.sensorToMap.transform.translation.x = sensorToMapTf.getOrigin().x();
+      conf_srv.request.sensorToMap.transform.translation.y = sensorToMapTf.getOrigin().y();
+      conf_srv.request.sensorToMap.transform.translation.z = sensorToMapTf.getOrigin().z();
+      
+      conf_srv.request.sensorToMap.transform.rotation.x = sensorToMapTf.getRotation().x();
+      conf_srv.request.sensorToMap.transform.rotation.y = sensorToMapTf.getRotation().y();
+      conf_srv.request.sensorToMap.transform.rotation.z = sensorToMapTf.getRotation().z();
+      conf_srv.request.sensorToMap.transform.rotation.w = sensorToMapTf.getRotation().w();
+
+      if (find_conflict_client.call(conf_srv)) {
+        ROS_INFO("Call find_conflict_service successfully");
+      } else {
+        ROS_ERROR("Fail to call find_conflict_service");
+      }
+
+      //------------------------------------------------------------------------------
 
       // concatenate reading_cloud with map_cloud
       map_cloud += cloud_in;
