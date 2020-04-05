@@ -14,7 +14,7 @@ This a ROS package for calculating vehicle odometry and pointcloud register usin
 
 ```
 $ cd your_catkin_workspace/src
-$ git clone 
+$ git clone https://github.com/quan-dao/rev_icp_mapper
 $ cd .. && catkin build
 ```
 
