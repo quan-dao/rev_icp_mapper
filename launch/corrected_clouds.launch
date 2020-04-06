@@ -30,6 +30,9 @@
   <param name="pointcloud/max_y" value="15.0" />
   <param name="pointcloud/min_z" value="-1.25" />  <!--in frame /velo_link-->
   <param name="pointcloud/max_z" value="1.5" />
+  <param name="pointcloud/cluster/tor" value="0.5" /> <!--ok: 0.2-->
+  <param name="pointcloud/cluster/size_min" value="10" />
+  <param name="pointcloud/cluster/size_max" value="10000" />
 </node>
 
 <node pkg="rosbag" type="play" name="player" args="-r 0.1 --clock /home/mqdao/Downloads/KITTI/kitti_2011_09_26_drive_0005_synced.bag" />

@@ -7,10 +7,16 @@
 #include <geometry_msgs/PoseStamped.h>
 
 #include <pcl/point_types.h>
+
 #include <pcl/filters/crop_box.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/passthrough.h>
+#include <pcl/filters/extract_indices.h>
+
+#include <pcl/kdtree/kdtree.h>
+#include <pcl/segmentation/extract_clusters.h>
+
 #include <pcl/conversions.h>
 #include <pcl_ros/transforms.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -27,9 +33,10 @@ typedef pcl::PointCloud<PCLPoint> PCLPointCloud;
 
 class IcpOdom
 {
-public:
+ public:
   IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_);
-protected:
+
+ protected:
   void cloudCallBack(const PointCloud2::ConstPtr& cloud_msg);
   void publishAll(ros::Time stamp);
   void tfTransformToGeometryPose(const tf::StampedTransform& tf_trans, geometry_msgs::PoseStamped& pose);
@@ -37,7 +44,7 @@ protected:
   ros::NodeHandle nh, nh_private;
 
   ros::Subscriber cloud_sub;
-  ros::Publisher merged_cloud_pub_, corrected_cloud_pub_;
+  ros::Publisher merged_cloud_pub_, corrected_cloud_pub_, clustered_cloud_pub_;
   ros::ServiceClient cloud_matcher_client;
   tf::TransformListener tf_listener;
 
@@ -68,12 +75,17 @@ protected:
   float cloudMinY_,cloudMaxY_;
   float cloudMinZ_,cloudMaxZ_;
 
+  // param for clustering
+  float cloudClusterTor_;
+  int cloudClusterSizeMin_, cloudClusterSizeMax_;
+
   string world_frameId, sensor_frameId;
 };
 
 
 IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
-  :nh(nh_),
+  :
+  nh(nh_),
   nh_private(nh_private_),
   // init cloud ptr
   map_cloud_{new PCLPointCloud},
@@ -96,13 +108,17 @@ IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   // pass through
   cloudMinX_{0.5}, cloudMaxX_{40.},
   cloudMinY_{-15.}, cloudMaxY_{10.},
-  cloudMinZ_{0.25}, cloudMaxZ_{7.0}
+  cloudMinZ_{0.25}, cloudMaxZ_{7.0},
+  // clustering
+  cloudClusterTor_{0.02},
+  cloudClusterSizeMin_{50}, cloudClusterSizeMax_{1000}
 {
   // setup topic
   cloud_sub = nh.subscribe("cloud_in", 1, &IcpOdom::cloudCallBack, this);
   
   merged_cloud_pub_ = nh.advertise<PointCloud2>("merged_cloud", 1);
   corrected_cloud_pub_ = nh.advertise<PointCloud2>("corrected_cloud", 1);
+  clustered_cloud_pub_ = nh.advertise<PointCloud2>("clustered_cloud", 1);
   path_pub_ = nh.advertise<nav_msgs::Path>("sensor_path", 1);
 
   ros::service::waitForService("rev_match_clouds");
@@ -128,6 +144,10 @@ IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   nh_private.param("pointcloud/max_y", cloudMaxY_, cloudMaxY_);
   nh_private.param("pointcloud/min_z", cloudMinZ_, cloudMinZ_);
   nh_private.param("pointcloud/max_z", cloudMaxZ_, cloudMaxZ_);
+  // clustering
+  nh_private.param("pointcloud/cluster/tor", cloudClusterTor_, cloudClusterTor_);
+  nh_private.param("pointcloud/cluster/size_min", cloudClusterSizeMin_, cloudClusterSizeMin_);
+  nh_private.param("pointcloud/cluster/size_max", cloudClusterSizeMax_, cloudClusterSizeMax_);
 }
 
 
@@ -338,6 +358,56 @@ void IcpOdom::publishAll(ros::Time stamp)
   map_cloud_msg.header.frame_id = world_frameId;
   map_cloud_msg.header.stamp = stamp;
   merged_cloud_pub_.publish(map_cloud_msg);
+
+  // DOING: cluster cloud_in_
+  pcl::search::KdTree<pcl::PointXYZ>::Ptr tree{new pcl::search::KdTree<PCLPoint>};
+  tree->setInputCloud(cloud_in_->makeShared());
+  
+  vector<pcl::PointIndices> cluster_indices;  // each element of this vector stores indices of a cluster
+
+  pcl::EuclideanClusterExtraction<pcl::PointXYZ> ece;
+  ece.setClusterTolerance(cloudClusterTor_); 
+  ece.setMinClusterSize(cloudClusterSizeMin_);
+  ece.setMaxClusterSize(cloudClusterSizeMax_);
+  ece.setSearchMethod (tree);
+  ece.setInputCloud (cloud_in_->makeShared());
+  ece.extract (cluster_indices);
+  
+  cout<<"[INFO] Number of found cluster: "<<cluster_indices.size()<<"\n";
+  cout<<"-------------------------------------------------------------\n";
+  
+  // visualize cluster in cloud_in_
+  int cluster_idx{0};
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_clustered{new pcl::PointCloud<pcl::PointXYZRGB>};
+  for (std::vector<pcl::PointIndices>::const_iterator it = cluster_indices.begin (); it != cluster_indices.end (); ++it) {  // iterate clusters
+    uint8_t r{0}, g{0}, b{0};
+    switch (cluster_idx%6) {
+      case 0: r = 255; break;
+      case 1: g = 255; break;
+      case 2: b = 255; break;
+      case 3: r = 255; g = 255; break;
+      case 4: r = 255; b = 255; break;
+      case 5: b = 255; g = 255; break;
+    }
+    for (vector<int>::const_iterator pit = it->indices.begin (); pit != it->indices.end (); ++pit) {  // iterate points in each cluster
+      pcl::PointXYZRGB p{r, g, b};
+      p.x = cloud_in_->points[*pit].x;
+      p.y = cloud_in_->points[*pit].y;
+      p.z = cloud_in_->points[*pit].z;
+      cloud_clustered->points.push_back(p);
+    }
+    ++cluster_idx;
+  }
+  // finish cloud_clustered
+  cloud_clustered->height = 1;
+  cloud_clustered->width = cloud_clustered->points.size();
+
+  // publish clustered cloud
+  PointCloud2 clustered_cloud_msg;
+  pcl::toROSMsg(*cloud_clustered, clustered_cloud_msg);
+  clustered_cloud_msg.header.frame_id = world_frameId;
+  clustered_cloud_msg.header.stamp = stamp;
+  clustered_cloud_pub_.publish(clustered_cloud_msg);
 
   // publish corrected cloud
   PointCloud2 corrected_cloud_msg;
