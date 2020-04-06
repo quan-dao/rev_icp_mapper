@@ -7,6 +7,8 @@
 #include <geometry_msgs/PoseStamped.h>
 
 #include <pcl/point_types.h>
+#include <pcl/filters/crop_box.h>
+#include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl/conversions.h>
@@ -52,6 +54,21 @@ protected:
   int startup_drop, reading_cloud_counter, max_cloud;
   float maxOverlapToMerge;
 
+  // parameter for cloud filtering
+  //box filter
+  float cloudBoxMinX_, cloudBoxMaxX_;
+  float cloudBoxMinY_, cloudBoxMaxY_;
+  float cloudBoxMinZ_, cloudBoxMaxZ_;
+  // statistical
+  int cloudNumNeighbros_;
+  float cloudStdDevMul_;
+  // voxel
+  float cloudLeafSize_;
+  // passthrough
+  float cloudMinX_,cloudMaxX_;
+  float cloudMinY_,cloudMaxY_;
+  float cloudMinZ_,cloudMaxZ_;
+
   string world_frameId, sensor_frameId;
 };
 
@@ -63,8 +80,20 @@ IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   reading_cloud_counter(0),
   maxOverlapToMerge(0.9),
   max_cloud(15),
-  world_frameId("world"),
-  sensor_frameId("velo_link")
+  //frame
+  world_frameId("world"), sensor_frameId("velo_link"),
+  // box filter
+  cloudBoxMinX_{-1.4}, cloudBoxMaxX_{1.4},
+  cloudBoxMinY_{-1.2}, cloudBoxMaxY_{1.0},
+  cloudBoxMinZ_{-2.0}, cloudBoxMaxZ_{0.5},
+  //statistical filter
+  cloudNumNeighbros_{50}, cloudStdDevMul_{1.},
+  // voxel grid
+  cloudLeafSize_{0.5},
+  // pass through
+  cloudMinX_{0.5}, cloudMaxX_{40.},
+  cloudMinY_{-15.}, cloudMaxY_{10.},
+  cloudMinZ_{0.25}, cloudMaxZ_{7.0}
 {
   // setup topic
   cloud_sub = nh.subscribe("cloud_in", 1, &IcpOdom::cloudCallBack, this);
@@ -81,6 +110,20 @@ IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   nh_private.param("world_frameId", world_frameId, world_frameId);
   nh_private.param("sensor_frameId", sensor_frameId, sensor_frameId);
   nh_private.param("max_cloud", max_cloud, max_cloud);
+  // pointcloud filtering
+  nh_private.param("pointcloud/box_min_x", cloudBoxMinX_, cloudBoxMinX_);
+  nh_private.param("pointcloud/box_max_x", cloudBoxMaxX_, cloudBoxMaxX_);
+  nh_private.param("pointcloud/box_min_y", cloudBoxMinY_, cloudBoxMinY_);
+  nh_private.param("pointcloud/box_max_y", cloudBoxMaxY_, cloudBoxMaxY_);
+  nh_private.param("pointcloud/num_neighbors", cloudNumNeighbros_, cloudNumNeighbros_);
+  nh_private.param("pointcloud/std_dev_mul", cloudStdDevMul_, cloudStdDevMul_);
+  nh_private.param("pointcloud/leaf_size", cloudLeafSize_, cloudLeafSize_);
+  nh_private.param("pointcloud/min_x", cloudMinX_, cloudMinX_);
+  nh_private.param("pointcloud/max_x", cloudMaxX_, cloudMaxX_);
+  nh_private.param("pointcloud/min_y", cloudMinY_, cloudMinY_);
+  nh_private.param("pointcloud/max_y", cloudMaxY_, cloudMaxY_);
+  nh_private.param("pointcloud/min_z", cloudMinZ_, cloudMinZ_);
+  nh_private.param("pointcloud/max_z", cloudMaxZ_, cloudMaxZ_);
 }
 
 
@@ -112,9 +155,51 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
     return;
   }
 
+  /// PREPROCESS INCOMING CLOUD
   PCLPointCloud cloud_in;
   pcl::fromROSMsg(*cloud_msg, cloud_in);
-  // transform map_cloud currently express in /velo_link to /world frame
+
+  // box filter 
+  pcl::CropBox<PCLPoint> box;
+  box.setMin(Eigen::Vector4f{cloudBoxMinX_, cloudBoxMinY_, cloudBoxMinZ_, 1.0});
+  box.setMax(Eigen::Vector4f{cloudBoxMaxX_, cloudBoxMaxY_, cloudBoxMaxZ_, 1.0});
+  box.setNegative(true);  // to filter the points inside the box
+  box.setInputCloud(cloud_in.makeShared());
+  box.filter(cloud_in);
+
+  // statistical filter
+  pcl::StatisticalOutlierRemoval<PCLPoint> sor;
+  sor.setInputCloud(cloud_in.makeShared());
+  sor.setMeanK(cloudNumNeighbros_);
+  sor.setStddevMulThresh(cloudStdDevMul_);
+  sor.filter(cloud_in);
+
+  // // voxel filter
+  pcl::VoxelGrid<PCLPoint> voxIn;
+  voxIn.setInputCloud(cloud_in.makeShared());
+  voxIn.setLeafSize (cloudLeafSize_, cloudLeafSize_, cloudLeafSize_);
+  voxIn.filter(cloud_in);
+
+  // pass through filter
+  pcl::PassThrough<PCLPoint> pass_x;
+  pass_x.setFilterFieldName("x");
+  pass_x.setFilterLimits(cloudMinX_, cloudMaxX_);
+  pass_x.setInputCloud(cloud_in.makeShared());
+  pass_x.filter(cloud_in);
+
+  pcl::PassThrough<PCLPoint> pass_y;
+  pass_y.setFilterFieldName("y");
+  pass_y.setFilterLimits(cloudMinY_, cloudMaxY_);
+  pass_y.setInputCloud(cloud_in.makeShared());
+  pass_y.filter(cloud_in);
+
+  pcl::PassThrough<PCLPoint> pass_z;
+  pass_z.setFilterFieldName("z");
+  pass_z.setFilterLimits(cloudMinZ_, cloudMaxZ_);
+  pass_z.setInputCloud(cloud_in.makeShared());
+  pass_z.filter(cloud_in);
+
+  // TRANSFORM cloud_in CURRENTLY EXPRESSED IN frame /velo_link TO frame /world
   tf::StampedTransform sensorToWorldTf;
   try {
     tf_listener.waitForTransform(world_frameId, cloud_msg->header.frame_id, cloud_msg->header.stamp, ros::Duration(0.1));
@@ -150,8 +235,7 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
     return;
   }
 
-
-  /// Register reading cloud to map cloud
+  /// REGISTER READING CLOUD TO MAP CLOUD
   rev_icp_mapper::MatchCloudsREV srv;
   PointCloud2 map_cloud_msg, reading_cloud_msg;
   pcl::toROSMsg(map_cloud, map_cloud_msg);
@@ -205,31 +289,31 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
       // concatenate reading_cloud with map_cloud
       map_cloud += cloud_in;
 
-      // subsample map_cloud
-      uint32_t num_before(map_cloud.width);
+      // NECESSARY: subsample map_cloud
+      // uint32_t num_before(map_cloud.width);
       
-      pcl::VoxelGrid<PCLPoint> sor;
-      sor.setInputCloud (map_cloud.makeShared());
-      sor.setLeafSize (0.125f, 0.125f, 0.125f);
-      sor.filter (map_cloud);
+      pcl::VoxelGrid<PCLPoint> vox;
+      vox.setInputCloud(map_cloud.makeShared());
+      vox.setLeafSize(cloudLeafSize_, cloudLeafSize_, cloudLeafSize_);
+      vox.filter(map_cloud);
 
-      cout<<"Downsampling map cloud\n\tNum pts before: "<<num_before<<"\n";
-      cout<<"\tNum pts after: "<<map_cloud.width<<"\n";
-      cout<<"\tReduced factor: "<<100.0-map_cloud.width*100.0/num_before<<"\n";
+      // cout<<"Downsampling map cloud\n\tNum pts before: "<<num_before<<"\n";
+      // cout<<"\tNum pts after: "<<map_cloud.width<<"\n";
+      // cout<<"\tReduced factor: "<<100.0-map_cloud.width*100.0/num_before<<"\n";
 
       // drop map_cloud if number of point exist a threshold
       if (map_cloud.width>300000) {
-        num_before = map_cloud.width;
+        uint32_t num_before = map_cloud.width;
         // transform map_cloud to sensor frame
         Eigen::Matrix4f mapToSensor;
         pcl_ros::transformAsMatrix(sensorToMapTf.inverse(), mapToSensor);
         pcl::transformPointCloud(map_cloud, map_cloud, mapToSensor);
         // pass through filter
-        pcl::PassThrough<PCLPoint> pass_x;
-        pass_x.setFilterFieldName("x");
-        pass_x.setFilterLimits(-5, 100);
-        pass_x.setInputCloud(map_cloud.makeShared());
-        pass_x.filter(map_cloud);
+        pcl::PassThrough<PCLPoint> passXMap;
+        passXMap.setFilterFieldName("x");
+        passXMap.setFilterLimits(-5, 100);
+        passXMap.setInputCloud(map_cloud.makeShared());
+        passXMap.filter(map_cloud);
         cout<<"Dropping pointcloud has negative x in sensor frame\n";
         cout<<"\tNum pts after: "<<map_cloud.width<<"\n";
         cout<<"\tReduced factor: "<<100.0-map_cloud.width*100.0/num_before<<"\n";
