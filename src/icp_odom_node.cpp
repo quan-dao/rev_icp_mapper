@@ -35,15 +35,19 @@ protected:
   void tfTransformToGeometryPose(const tf::StampedTransform& tf_trans, geometry_msgs::PoseStamped& pose);
 
   ros::NodeHandle nh, nh_private;
+  bool latch_topic;
 
   ros::Subscriber cloud_sub;
-  ros::Publisher merged_cloud_pub;
+  ros::Publisher merged_cloud_pub, corrected_cloud_pub, visClusterCloud_pub;
   ros::ServiceClient cloud_matcher_client, find_conflict_client;
   tf::TransformListener tf_listener;
 
   // for path visualization
   ros::Publisher path_pub;
   vector<geometry_msgs::PoseStamped> path_poses;
+
+  // for cluster visulization
+  pcl::PointCloud<pcl::PointXYZRGB> visClusterCloud;
 
   PCLPointCloud map_cloud, reading_cloud, corrected_cloud;
   Eigen::Matrix4f worldToMap;
@@ -53,6 +57,8 @@ protected:
   int startup_drop, reading_cloud_counter, max_cloud;
   float maxOverlapToMerge;
 
+  float cloud_voxelGridLeafSize;
+
   string world_frameId, sensor_frameId;
 };
 
@@ -60,18 +66,23 @@ protected:
 IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   :nh(nh_),
   nh_private(nh_private_),
+  latch_topic(false),
   startup_drop(1),
   reading_cloud_counter(0),
   maxOverlapToMerge(0.9),
   max_cloud(15),
   world_frameId("world"),
-  sensor_frameId("velo_link")
+  sensor_frameId("velo_link"),
+  cloud_voxelGridLeafSize(0.15)
 {
   // setup topic
   cloud_sub = nh.subscribe("cloud_in", 1, &IcpOdom::cloudCallBack, this);
   
-  merged_cloud_pub = nh.advertise<PointCloud2>("merged_cloud", 1);
-  path_pub = nh.advertise<nav_msgs::Path>("sensor_path", 1);
+  nh_private.param("latch_topic", latch_topic, latch_topic);
+  merged_cloud_pub = nh.advertise<PointCloud2>("merged_cloud", 1, latch_topic);
+  path_pub = nh.advertise<nav_msgs::Path>("sensor_path", 1, latch_topic);
+  visClusterCloud_pub = nh.advertise<PointCloud2>("vis_cluster_cloud", 1, latch_topic);
+  corrected_cloud_pub = nh.advertise<PointCloud2>("corrected_incoming_cloud", 1, latch_topic);
 
   ros::service::waitForService("rev_match_clouds");
   cloud_matcher_client = nh.serviceClient<rev_icp_mapper::MatchCloudsREV>("rev_match_clouds");
@@ -84,6 +95,7 @@ IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   nh_private.param("world_frameId", world_frameId, world_frameId);
   nh_private.param("sensor_frameId", sensor_frameId, sensor_frameId);
   nh_private.param("max_cloud", max_cloud, max_cloud);
+  nh_private.param("cloud_voxelGridLeafSize", cloud_voxelGridLeafSize, cloud_voxelGridLeafSize);
 }
 
 
@@ -205,10 +217,26 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
       tfTransformToGeometryPose(sensorToMapTf, pose_);
       path_poses.push_back(pose_);
 
+      // store cloud_in in corrected_cloud for visualization
+      if (!corrected_cloud.points.empty())
+        corrected_cloud.clear();
+
+      corrected_cloud = cloud_in;
+      corrected_cloud.height = 1;
+      corrected_cloud.width = corrected_cloud.points.size();
+
       //------------------------------------------------------------------------------
       // invoke find_conflict_server
       octomap_mot::FindConflict conf_srv;
-      pcl::toROSMsg(cloud_in, conf_srv.request.incoming_cloud);
+
+      // apply voxel grid filter for cloud_in
+      PCLPointCloud cloud_in_downsampled(cloud_in);
+      pcl::VoxelGrid<PCLPoint> sor_;
+      sor_.setInputCloud (cloud_in_downsampled.makeShared());
+      sor_.setLeafSize (cloud_voxelGridLeafSize, cloud_voxelGridLeafSize, cloud_voxelGridLeafSize);
+      sor_.filter (cloud_in_downsampled);
+
+      pcl::toROSMsg(cloud_in_downsampled, conf_srv.request.incoming_cloud);
       // convert sensorToMapTf to geometry/TransformStamped
       conf_srv.request.sensorToMap.header.stamp = sensorToMapTf.stamp_;
       conf_srv.request.sensorToMap.transform.translation.x = sensorToMapTf.getOrigin().x();
@@ -222,6 +250,59 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
 
       if (find_conflict_client.call(conf_srv)) {
         ROS_INFO("Call find_conflict_service successfully");
+        
+        /// update visClusterCloud
+        
+        if (!visClusterCloud.points.empty())
+          visClusterCloud.clear();
+        // init visClusterCloud
+        visClusterCloud.header.frame_id = world_frameId;
+        visClusterCloud.height = 1;
+
+        // add points into visClusterCloud
+        int cluster_idx = 0;
+        for (sensor_msgs::PointCloud2 cluster_msg : conf_srv.response.clustered_conflict_clouds) 
+        {
+          // convert to pcl
+          PCLPointCloud cluster_pc;
+          pcl::fromROSMsg(cluster_msg, cluster_pc);
+          // add points with colors
+          for (PCLPoint p_ : cluster_pc.points) {
+            pcl::PointXYZRGB p_color;
+            // set position
+            p_color.x = p_.x;
+            p_color.y = p_.y;
+            p_color.z = p_.z;
+            
+            // set color
+            if (cluster_idx % 6 == 0) 
+              p_color.r = 255;
+            if (cluster_idx % 6 == 1) 
+              p_color.g = 255;
+            if (cluster_idx % 6 == 2) 
+              p_color.b = 255;
+            if (cluster_idx % 6 == 3) { 
+              p_color.r = 255;
+              p_color.g = 255;
+            }
+            if (cluster_idx % 6 == 4) { 
+              p_color.r = 255;
+              p_color.b = 255;
+            }
+            if (cluster_idx % 6 == 5) { 
+              p_color.b = 255;
+              p_color.g = 255;
+            }
+
+            // store this point into visClusterCloud
+            visClusterCloud.points.push_back(p_color);
+          }
+          cluster_idx++;
+        }
+
+        // finish visClusterCloud
+        visClusterCloud.width = visClusterCloud.points.size();
+
       } else {
         ROS_ERROR("Fail to call find_conflict_service");
       }
@@ -275,18 +356,40 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
 void IcpOdom::publishAll(ros::Time stamp)
 { 
   // publish merge cloud
-  PointCloud2 map_cloud_msg;
-  pcl::toROSMsg(map_cloud, map_cloud_msg);
-  map_cloud_msg.header.frame_id = world_frameId;
-  map_cloud_msg.header.stamp = stamp;
-  merged_cloud_pub.publish(map_cloud_msg);
+  if (merged_cloud_pub.getNumSubscribers() > 0) {
+    PointCloud2 map_cloud_msg;
+    pcl::toROSMsg(map_cloud, map_cloud_msg);
+    map_cloud_msg.header.frame_id = world_frameId;
+    map_cloud_msg.header.stamp = stamp;
+    merged_cloud_pub.publish(map_cloud_msg);
+  }
 
   // publish path
-  nav_msgs::Path path_;
-  path_.header.frame_id = world_frameId;
-  path_.header.stamp = stamp;
-  path_.poses = path_poses;
-  path_pub.publish(path_);
+  if (path_pub.getNumSubscribers() > 0) {
+    nav_msgs::Path path_;
+    path_.header.frame_id = world_frameId;
+    path_.header.stamp = stamp;
+    path_.poses = path_poses;
+    path_pub.publish(path_);
+  }
+
+  // publish corrected_cloud
+  if (corrected_cloud_pub.getNumSubscribers() > 0) {
+    PointCloud2 corrected_cloud_msg;
+    pcl::toROSMsg(corrected_cloud, corrected_cloud_msg);
+    corrected_cloud_msg.header.frame_id = world_frameId;
+    corrected_cloud_msg.header.stamp = stamp;
+    corrected_cloud_pub.publish(corrected_cloud_msg);
+  }
+  
+  // publish visConfCloud
+  if (visClusterCloud_pub.getNumSubscribers() > 0) {
+    PointCloud2 vis_cluster_msg;
+    pcl::toROSMsg(visClusterCloud, vis_cluster_msg);
+    vis_cluster_msg.header.frame_id = world_frameId;
+    vis_cluster_msg.header.stamp = stamp;
+    visClusterCloud_pub.publish(vis_cluster_msg);
+  }
 }
 
 
