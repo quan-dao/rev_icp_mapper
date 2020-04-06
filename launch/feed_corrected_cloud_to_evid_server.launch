@@ -31,32 +31,38 @@
 
   <!-- filter ground -->
   <param name="filter_ground" value="false"/>
-
-  <!--pointcloud pass through filter-->
-  <param name="pointcloud_min_x" value="-5"/>
-  <param name="pointcloud_min_y" value="-10"/>
-  <param name="pointcloud_max_y" value="10"/>
-  <param name="pointcloud_min_z" value="0.2" />
-  <param name="pointcloud_max_z" value="3.0" />
-
-  <!--for clustering conflict cloud-->
-  <param name="pointcloud_cluster_sizeMin" value="3"/>  <!--7-->
-  <param name="pointcloud_cluster_sizeMax" value="20"/> <!--15-->
-  <param name="pointcloud_cluster_tolerance" value="0.75"/> <!--1.0-->
-
 </node>	
 
-<node pkg="rviz" type="rviz" name="rviz" args="-d $(find octomap_mot)/rviz/test_octomap_evid.rviz" />
+<node pkg="rviz" type="rviz" name="rviz" args="-d $(find rev_icp_mapper)/rviz/kitti_icp_odom.rviz" />
 
 <node pkg="rosbag" type="play" name="player" args="-r 0.1 --clock /home/mqdao/Downloads/KITTI/kitti_2011_09_26_drive_0005_synced.bag" />
 
 <node pkg="rev_icp_mapper" type="icp_odom_node" name="icp_odom_node" output="screen">
   <remap from="cloud_in" to="/kitti/velo/pointcloud" />
-  <param name="latch_topic" value="false"/>
-  <param name="max_cloud" value="254" />
-  <param name="maxOverlapToMerge" value="0.98" />
+  
+  <param name="max_cloud" value="154" />
   <param name="startup_drop" value="1" />
-  <param name="cloud_voxelGridLeafSize" value="0.47"/> <!--ok: 0.5-->
+  
+  <param name="maxOverlapToMerge" value="0.98" />
+  
+  <!--cloud preprocess param all are in /velo_link-->
+  <param name="pointcloud/box_min_x" value="-1.4" />
+  <param name="pointcloud/box_max_x" value="1.4" />
+  <param name="pointcloud/box_min_y" value="-2.0" />
+  <param name="pointcloud/box_max_y" value="2.0" />
+  <param name="pointcloud/num_neighbors" value="25" /> <!--ok: 50-->
+  <param name="pointcloud/std_dev_mul" value="0.5" /> <!--ok: 1.0-->
+  <param name="pointcloud/leaf_size" value="0.1" />
+  <param name="pointcloud/min_x" value="0.5" />
+  <param name="pointcloud/max_x" value="40.0" />
+  <param name="pointcloud/min_y" value="-15.0" />
+  <param name="pointcloud/max_y" value="15.0" />
+  <param name="pointcloud/min_z" value="-1.25" />  <!--in frame /velo_link-->
+  <param name="pointcloud/max_z" value="1.5" />
+  <!--No need yet-->
+  <param name="pointcloud/cluster/tor" value="0.5" /> <!--ok: 0.2-->
+  <param name="pointcloud/cluster/size_min" value="10" />
+  <param name="pointcloud/cluster/size_max" value="10000" />
 </node>
 
 </launch>
