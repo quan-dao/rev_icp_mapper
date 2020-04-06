@@ -47,7 +47,7 @@ class IcpOdom
 
   ros::Subscriber cloud_sub;
   ros::Publisher merged_cloud_pub_, corrected_cloud_pub_, clustered_cloud_pub_;
-  ros::ServiceClient cloud_matcher_client;
+  ros::ServiceClient cloud_matcher_client, find_conflict_client;
   tf::TransformListener tf_listener;
 
   // for path visualization
