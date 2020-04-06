@@ -29,7 +29,6 @@ class IcpOdom
 {
 public:
   IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_);
-
 protected:
   void cloudCallBack(const PointCloud2::ConstPtr& cloud_msg);
   void publishAll(ros::Time stamp);
@@ -38,15 +37,15 @@ protected:
   ros::NodeHandle nh, nh_private;
 
   ros::Subscriber cloud_sub;
-  ros::Publisher merged_cloud_pub;
+  ros::Publisher merged_cloud_pub_, corrected_cloud_pub_;
   ros::ServiceClient cloud_matcher_client;
   tf::TransformListener tf_listener;
 
   // for path visualization
-  ros::Publisher path_pub;
+  ros::Publisher path_pub_;
   vector<geometry_msgs::PoseStamped> path_poses;
 
-  PCLPointCloud map_cloud, reading_cloud, corrected_cloud;
+  PCLPointCloud::Ptr map_cloud_, cloud_in_;
   Eigen::Matrix4f worldToMap;
 
   tf::StampedTransform sensorToMapTf;  // map frame is world frame !!!
@@ -76,6 +75,10 @@ protected:
 IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   :nh(nh_),
   nh_private(nh_private_),
+  // init cloud ptr
+  map_cloud_{new PCLPointCloud},
+  cloud_in_ {new PCLPointCloud},
+  // icp param
   startup_drop(1),
   reading_cloud_counter(0),
   maxOverlapToMerge(0.9),
@@ -98,8 +101,9 @@ IcpOdom::IcpOdom(ros::NodeHandle nh_, ros::NodeHandle nh_private_)
   // setup topic
   cloud_sub = nh.subscribe("cloud_in", 1, &IcpOdom::cloudCallBack, this);
   
-  merged_cloud_pub = nh.advertise<PointCloud2>("merged_cloud", 1);
-  path_pub = nh.advertise<nav_msgs::Path>("sensor_path", 1);
+  merged_cloud_pub_ = nh.advertise<PointCloud2>("merged_cloud", 1);
+  corrected_cloud_pub_ = nh.advertise<PointCloud2>("corrected_cloud", 1);
+  path_pub_ = nh.advertise<nav_msgs::Path>("sensor_path", 1);
 
   ros::service::waitForService("rev_match_clouds");
   cloud_matcher_client = nh.serviceClient<rev_icp_mapper::MatchCloudsREV>("rev_match_clouds");
@@ -155,49 +159,54 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
     return;
   }
 
-  /// PREPROCESS INCOMING CLOUD
-  PCLPointCloud cloud_in;
-  pcl::fromROSMsg(*cloud_msg, cloud_in);
+  if (reading_cloud_counter > max_cloud + startup_drop) {  // stop processing condition
+    publishAll(cloud_msg->header.stamp);
+    return;
+  }
 
+  // get incoming cloud
+  pcl::fromROSMsg(*cloud_msg, *cloud_in_);
+
+  /// PREPROCESS INCOMING CLOUD
   // box filter 
   pcl::CropBox<PCLPoint> box;
   box.setMin(Eigen::Vector4f{cloudBoxMinX_, cloudBoxMinY_, cloudBoxMinZ_, 1.0});
   box.setMax(Eigen::Vector4f{cloudBoxMaxX_, cloudBoxMaxY_, cloudBoxMaxZ_, 1.0});
   box.setNegative(true);  // to filter the points inside the box
-  box.setInputCloud(cloud_in.makeShared());
-  box.filter(cloud_in);
+  box.setInputCloud(cloud_in_->makeShared());
+  box.filter(*cloud_in_);
 
   // statistical filter
   pcl::StatisticalOutlierRemoval<PCLPoint> sor;
-  sor.setInputCloud(cloud_in.makeShared());
   sor.setMeanK(cloudNumNeighbros_);
   sor.setStddevMulThresh(cloudStdDevMul_);
-  sor.filter(cloud_in);
+  sor.setInputCloud(cloud_in_->makeShared());
+  sor.filter(*cloud_in_);
 
   // // voxel filter
   pcl::VoxelGrid<PCLPoint> voxIn;
-  voxIn.setInputCloud(cloud_in.makeShared());
   voxIn.setLeafSize (cloudLeafSize_, cloudLeafSize_, cloudLeafSize_);
-  voxIn.filter(cloud_in);
+  voxIn.setInputCloud(cloud_in_->makeShared());
+  voxIn.filter(*cloud_in_);
 
   // pass through filter
   pcl::PassThrough<PCLPoint> pass_x;
   pass_x.setFilterFieldName("x");
   pass_x.setFilterLimits(cloudMinX_, cloudMaxX_);
-  pass_x.setInputCloud(cloud_in.makeShared());
-  pass_x.filter(cloud_in);
+  pass_x.setInputCloud(cloud_in_->makeShared());
+  pass_x.filter(*cloud_in_);
 
   pcl::PassThrough<PCLPoint> pass_y;
   pass_y.setFilterFieldName("y");
   pass_y.setFilterLimits(cloudMinY_, cloudMaxY_);
-  pass_y.setInputCloud(cloud_in.makeShared());
-  pass_y.filter(cloud_in);
+  pass_y.setInputCloud(cloud_in_->makeShared());
+  pass_y.filter(*cloud_in_);
 
   pcl::PassThrough<PCLPoint> pass_z;
   pass_z.setFilterFieldName("z");
   pass_z.setFilterLimits(cloudMinZ_, cloudMaxZ_);
-  pass_z.setInputCloud(cloud_in.makeShared());
-  pass_z.filter(cloud_in);
+  pass_z.setInputCloud(cloud_in_->makeShared());
+  pass_z.filter(*cloud_in_);
 
   // TRANSFORM cloud_in CURRENTLY EXPRESSED IN frame /velo_link TO frame /world
   tf::StampedTransform sensorToWorldTf;
@@ -211,37 +220,29 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
   }
   Eigen::Matrix4f sensorToWorld;
   pcl_ros::transformAsMatrix(sensorToWorldTf, sensorToWorld);
-  pcl::transformPointCloud(cloud_in, cloud_in, sensorToWorld);
+  pcl::transformPointCloud(*cloud_in_, *cloud_in_, sensorToWorld);
 
   // init map_cloud
   if (reading_cloud_counter == startup_drop) {
     ROS_INFO("Init map_cloud with current scan");
-    map_cloud = cloud_in;
+    *map_cloud_ = *cloud_in_;
 
     ROS_INFO("Init sensorToMapTf with current sensorToWorldTf");
     sensorToMapTf = sensorToWorldTf;
     
     ROS_INFO("Init path with current sensorToMapTf");
-    geometry_msgs::PoseStamped pose_;
-    tfTransformToGeometryPose(sensorToMapTf, pose_);
-    path_poses.push_back(pose_);
+    geometry_msgs::PoseStamped pose;
+    tfTransformToGeometryPose(sensorToMapTf, pose);
+    path_poses.push_back(pose);
 
     reading_cloud_counter++;
     return;
   }
 
-  if (reading_cloud_counter > max_cloud + startup_drop) {
-    publishAll(cloud_msg->header.stamp);
-    return;
-  }
-
   /// REGISTER READING CLOUD TO MAP CLOUD
   rev_icp_mapper::MatchCloudsREV srv;
-  PointCloud2 map_cloud_msg, reading_cloud_msg;
-  pcl::toROSMsg(map_cloud, map_cloud_msg);
-  pcl::toROSMsg(cloud_in, reading_cloud_msg);
-  srv.request.reference = map_cloud_msg;
-  srv.request.readings = reading_cloud_msg;
+  pcl::toROSMsg(*map_cloud_, srv.request.reference);
+  pcl::toROSMsg(*cloud_in_, srv.request.readings);
 
   // init init_transform for ICP
   tf::Transform init_transform = sensorToMapTf * sensorToWorldTf.inverse();
@@ -270,8 +271,9 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
       tf::Transform worldToMapTf(worldToMap_rot, worldToMap_trans);
       pcl_ros::transformAsMatrix(worldToMapTf, worldToMap);
 
-      pcl::transformPointCloud(cloud_in, cloud_in, worldToMap);
-
+      /// CORRECT cloud_in
+      pcl::transformPointCloud(*cloud_in_, *cloud_in_, worldToMap);
+      
       // correct sensorToWorldTf with worldToMapTf (ICP result) to get sensorToMapTf (corrected odometry)
       tf::Transform sensorToMapTf_ = worldToMapTf * sensorToWorldTf;
       sensorToMapTf.setOrigin(sensorToMapTf_.getOrigin());
@@ -282,43 +284,41 @@ void IcpOdom::cloudCallBack(const PointCloud2::ConstPtr& cloud_msg)
       sensorToMapTf.stamp_ = cloud_msg->header.stamp;
 
       // concatenate new sensor poses (w.r.t map or world) to path
-      geometry_msgs::PoseStamped pose_;
-      tfTransformToGeometryPose(sensorToMapTf, pose_);
-      path_poses.push_back(pose_);
+      geometry_msgs::PoseStamped pose;
+      tfTransformToGeometryPose(sensorToMapTf, pose);
+      path_poses.push_back(pose);
 
-      // concatenate reading_cloud with map_cloud
-      map_cloud += cloud_in;
+      // concatenate reading_cloud with map_cloud_
+      *map_cloud_ += *cloud_in_;
 
-      // NECESSARY: subsample map_cloud
-      // uint32_t num_before(map_cloud.width);
-      
-      pcl::VoxelGrid<PCLPoint> vox;
-      vox.setInputCloud(map_cloud.makeShared());
-      vox.setLeafSize(cloudLeafSize_, cloudLeafSize_, cloudLeafSize_);
-      vox.filter(map_cloud);
+      // NECESSARY: subsample map_cloud_
+      pcl::VoxelGrid<PCLPoint> voxMap;
+      voxMap.setInputCloud(map_cloud_->makeShared());
+      voxMap.setLeafSize(cloudLeafSize_, cloudLeafSize_, cloudLeafSize_);
+      voxMap.filter(*map_cloud_);
 
       // cout<<"Downsampling map cloud\n\tNum pts before: "<<num_before<<"\n";
       // cout<<"\tNum pts after: "<<map_cloud.width<<"\n";
       // cout<<"\tReduced factor: "<<100.0-map_cloud.width*100.0/num_before<<"\n";
 
-      // drop map_cloud if number of point exist a threshold
-      if (map_cloud.width>300000) {
-        uint32_t num_before = map_cloud.width;
+      // drop map_cloud_ if number of point exist a threshold
+      if (map_cloud_->width > 300000) {
+        uint32_t num_before = map_cloud_->width;
         // transform map_cloud to sensor frame
         Eigen::Matrix4f mapToSensor;
         pcl_ros::transformAsMatrix(sensorToMapTf.inverse(), mapToSensor);
-        pcl::transformPointCloud(map_cloud, map_cloud, mapToSensor);
+        pcl::transformPointCloud(*map_cloud_, *map_cloud_, mapToSensor);
         // pass through filter
         pcl::PassThrough<PCLPoint> passXMap;
         passXMap.setFilterFieldName("x");
         passXMap.setFilterLimits(-5, 100);
-        passXMap.setInputCloud(map_cloud.makeShared());
-        passXMap.filter(map_cloud);
+        passXMap.setInputCloud(map_cloud_->makeShared());
+        passXMap.filter(*map_cloud_);
         cout<<"Dropping pointcloud has negative x in sensor frame\n";
-        cout<<"\tNum pts after: "<<map_cloud.width<<"\n";
-        cout<<"\tReduced factor: "<<100.0-map_cloud.width*100.0/num_before<<"\n";
+        cout<<"\tNum pts after: "<<map_cloud_->width<<"\n";
+        cout<<"\tReduced factor: "<<100.0-map_cloud_->width*100.0/num_before<<"\n";
         // transform map_cloud back to world frame
-        pcl::transformPointCloud(map_cloud, map_cloud, mapToSensor.inverse());
+        pcl::transformPointCloud(*map_cloud_, *map_cloud_, mapToSensor.inverse());
       }
     }
   }
@@ -334,17 +334,24 @@ void IcpOdom::publishAll(ros::Time stamp)
 { 
   // publish merge cloud
   PointCloud2 map_cloud_msg;
-  pcl::toROSMsg(map_cloud, map_cloud_msg);
+  pcl::toROSMsg(*map_cloud_, map_cloud_msg);
   map_cloud_msg.header.frame_id = world_frameId;
   map_cloud_msg.header.stamp = stamp;
-  merged_cloud_pub.publish(map_cloud_msg);
+  merged_cloud_pub_.publish(map_cloud_msg);
+
+  // publish corrected cloud
+  PointCloud2 corrected_cloud_msg;
+  pcl::toROSMsg(*cloud_in_, corrected_cloud_msg);
+  corrected_cloud_msg.header.frame_id = world_frameId;
+  corrected_cloud_msg.header.stamp = stamp;
+  corrected_cloud_pub_.publish(corrected_cloud_msg);
 
   // publish path
-  nav_msgs::Path path_;
-  path_.header.frame_id = world_frameId;
-  path_.header.stamp = stamp;
-  path_.poses = path_poses;
-  path_pub.publish(path_);
+  nav_msgs::Path path;
+  path.header.frame_id = world_frameId;
+  path.header.stamp = stamp;
+  path.poses = path_poses;
+  path_pub_.publish(path);
 }
 
 
