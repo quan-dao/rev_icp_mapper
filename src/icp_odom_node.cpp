@@ -3,6 +3,7 @@
 #include "rev_icp_mapper/MatchCloudsREV.h"
 #include "octomap_mot/FindConflict.h"
 #include <tf/transform_listener.h>
+#include <tf/transform_broadcaster.h>
 #include <tf/tf.h>
 #include <nav_msgs/Path.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -21,6 +22,9 @@
 #include <pcl/conversions.h>
 #include <pcl_ros/transforms.h>
 #include <pcl_conversions/pcl_conversions.h>
+
+#include <Eigen/Eigen>  // for calculating svd
+#include <Eigen/SVD>
 
 #include <string>
 #include <iostream>
@@ -48,7 +52,9 @@ class IcpOdom
   ros::Subscriber cloud_sub;
   ros::Publisher merged_cloud_pub_, corrected_cloud_pub_, clustered_cloud_pub_;
   ros::ServiceClient cloud_matcher_client, find_conflict_client;
+
   tf::TransformListener tf_listener;
+  tf::TransformBroadcaster tf_broadcaster_;
 
   // for path visualization
   ros::Publisher path_pub_;
@@ -419,13 +425,50 @@ void IcpOdom::publishAll(ros::Time stamp)
         case 4: r = 255; b = 255; break;
         case 5: b = 255; g = 255; break;
       }
+
+      // VC: initialize cluster's COM
+      float x_bar{0}, y_bar{0}, z_bar{0};
+
       for (vector<int>::const_iterator pit = it->indices.begin (); pit != it->indices.end (); ++pit) {  // iterate points in each cluster
         pcl::PointXYZRGB p{r, g, b};
         p.x = cloud_in_->points[*pit].x;
         p.y = cloud_in_->points[*pit].y;
         p.z = cloud_in_->points[*pit].z;
         cloud_clustered->points.push_back(p);
+        // VC: compute COM
+        x_bar += p.x;
+        y_bar += p.y;
+        z_bar += p.z;
       }
+
+      // VC: finalize COM
+      x_bar /= it->indices.size();
+      y_bar /= it->indices.size();
+      z_bar /= it->indices.size();
+
+      // VC: construct P matrix
+      Eigen::MatrixXf P{it->indices.size(), 3};
+      for (int i = 0; i < it->indices.size(); ++i) {
+        P(i, 0) = cloud_in_->points[it->indices[i]].x - x_bar;
+        P(i, 1) = cloud_in_->points[it->indices[i]].y - y_bar;
+        P(i, 2) = cloud_in_->points[it->indices[i]].z - z_bar;
+      }
+
+      // VC: find V
+      Eigen::BDCSVD<Eigen::MatrixXf> svdOfP(P, Eigen::ComputeFullV);
+      const Eigen::MatrixXf &V = svdOfP.matrixV();
+
+      // VC: compute righthanded V from V
+      tf::Matrix3x3 ori{
+        V(0, 0), V(0, 1), V(1, 0) * V(2, 1) - V(2, 0) * V(1, 1),
+        V(1, 0), V(1, 1), V(2, 0) * V(0, 1) - V(0, 0) * V(2, 1),
+        V(2, 0), V(2, 1), V(0, 0) * V(1, 1) - V(1, 0) * V(0, 1)
+        };
+
+      // VC: broadcast VC of this cluster
+      tf::Transform virtual_chassis{ori, tf::Vector3(x_bar, y_bar, z_bar)};
+      tf_broadcaster_.sendTransform(tf::StampedTransform(virtual_chassis, stamp, world_frameId, "clustered_"+std::to_string(cluster_idx)));
+      // increment cluster_idx to change cluster color
       ++cluster_idx;
     }
     // finish cloud_clustered
